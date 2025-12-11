@@ -649,7 +649,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    current_user_login = "Rajee"
+    current_user_login = "Hasaranga"
 
     # File upload and caching for stability
     if 'cached_uploaded_files' not in st.session_state:
