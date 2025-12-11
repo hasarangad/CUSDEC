@@ -258,10 +258,14 @@ else:
     except Exception:
         pass
 
-# --- FIXED: Use Standard Gemini 1.5 Flash Model ---
-# 2.0-flash is a preview model and might cause 404/400 errors if not enabled in your project.
-# 1.5-flash is stable and highly capable for this task.
-gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+# --- FIXED: Use Standard Gemini 1.5 Flash Latest or Fallback ---
+# If 1.5-flash fails with 404, try 'gemini-pro' (1.0) which is older but very stable.
+# 'gemini-1.5-flash-latest' is the alias that usually resolves correctly.
+MODEL_NAME = "gemini-1.5-flash-latest"
+# ALTERNATIVE MODEL: If the above fails again, change the line above to:
+# MODEL_NAME = "gemini-pro"
+
+gemini_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
 
 def generate_content(prompt):
@@ -272,7 +276,7 @@ def generate_content(prompt):
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         logger.debug("Calling Gemini API: %s", gemini_endpoint)
-        log_info("Calling Gemini API...")
+        log_info(f"Calling Gemini API ({MODEL_NAME})...")
 
         response = requests.post(gemini_endpoint, headers=headers, json=data, timeout=30)
 
