@@ -22,7 +22,6 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 
-
 def _mirror_to_browser_console(level: str, message: str):
     """Send a console.<level> message to the browser via injected script."""
     try:
@@ -31,24 +30,20 @@ def _mirror_to_browser_console(level: str, message: str):
     except Exception:
         logger.debug("Failed to mirror message to browser console")
 
-
 def log_error(message: str):
     """Log error to terminal and browser console."""
     logger.error(message)
     _mirror_to_browser_console('error', message)
-
 
 def log_info(message: str):
     """Log info to terminal and browser console."""
     logger.info(message)
     _mirror_to_browser_console('info', message)
 
-
 def log_warning(message: str):
     """Log warning to terminal and browser console."""
     logger.warning(message)
     _mirror_to_browser_console('warn', message)
-
 
 COMPANY_NAME = "Jolanka Group"
 COMPANY_SLOGAN = "Innovative Customs Data Solutions"
@@ -177,7 +172,7 @@ st.markdown(f"""
         transform: translateY(-2px) scale(1.04);
         box-shadow: 0 6px 20px 0 #22c1c344;
     }}
-
+    
     </style>
 """, unsafe_allow_html=True)
 
@@ -231,23 +226,14 @@ components.html("""
 </script>
 """, height=0)
 
-# Load environment variables from .env file (for local dev)
+# Load environment variables from .env file
 load_dotenv()
 
-# --- FIXED: Gemini API Key Handling for Streamlit Cloud ---
-# 1. Try Streamlit Secrets (Production)
-# 2. Try OS Environment Variables (Local)
-gemini_api_key = None
-
-if "GOOGLE_API_KEY" in st.secrets:
-    gemini_api_key = st.secrets["GOOGLE_API_KEY"]
-elif os.getenv("GOOGLE_API_KEY"):
-    gemini_api_key = os.getenv("GOOGLE_API_KEY")
-
+# Gemini API Configuration
+gemini_api_key = os.getenv("GOOGLE_API_KEY")
 if not gemini_api_key:
-    err_msg = "Gemini API key not found! Please set 'GOOGLE_API_KEY' in your Streamlit Cloud Secrets or .env file."
+    err_msg = "Gemini API key not found. Please set GOOGLE_API_KEY in your .env file."
     st.error(err_msg)
-    st.info("To fix this in Streamlit Cloud: Go to App Settings > Secrets and add: GOOGLE_API_KEY = 'your_key'")
     log_error(err_msg)
     st.stop()
 else:
@@ -258,15 +244,7 @@ else:
     except Exception:
         pass
 
-# --- FIXED: Use Standard Gemini 1.5 Flash Latest or Fallback ---
-# If 1.5-flash fails with 404, try 'gemini-pro' (1.0) which is older but very stable.
-# 'gemini-1.5-flash-latest' is the alias that usually resolves correctly.
-MODEL_NAME = "gemini-1.5-flash-latest"
-# ALTERNATIVE MODEL: If the above fails again, change the line above to:
-# MODEL_NAME = "gemini-pro"
-
-gemini_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
-
+gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 def generate_content(prompt):
     headers = {
@@ -276,7 +254,7 @@ def generate_content(prompt):
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         logger.debug("Calling Gemini API: %s", gemini_endpoint)
-        log_info(f"Calling Gemini API ({MODEL_NAME})...")
+        log_info("Calling Gemini API...")
 
         response = requests.post(gemini_endpoint, headers=headers, json=data, timeout=30)
 
@@ -285,7 +263,7 @@ def generate_content(prompt):
         if response.status_code != 200:
             body_preview = response.text[:2000]
             err_msg = f"Gemini API returned {response.status_code}: {body_preview}"
-            st.error(f"AI Extraction Failed (Status {response.status_code}). Please check your API Key and Quota.")
+            st.error(err_msg)
             log_error(err_msg)
             return None
 
@@ -295,10 +273,9 @@ def generate_content(prompt):
     except requests.exceptions.RequestException as e:
         tb = traceback.format_exc()
         err_msg = f"Error calling Gemini API: {e}\n{tb}"
-        st.error(f"Network error calling AI service: {e}")
+        st.error(err_msg)
         log_error(err_msg)
         return None
-
 
 def extract_page_from_pdf(pdf_file_object):
     try:
@@ -316,7 +293,6 @@ def extract_page_from_pdf(pdf_file_object):
         st.error(err_msg)
         log_error(err_msg)
         return None
-
 
 def parse_customs_reference(raw_customs_ref):
     if not raw_customs_ref:
@@ -336,7 +312,6 @@ def parse_customs_reference(raw_customs_ref):
         else:
             ref_numbers.append(line)
     return ref_type, ref_numbers
-
 
 def extract_customs_reference_date(document_text, raw_customs_ref):
     # Try to extract a date in the format DD/MM/YYYY immediately after Customs Reference Number block
@@ -359,7 +334,6 @@ def extract_customs_reference_date(document_text, raw_customs_ref):
         if match:
             return match.group(1)
     return ""
-
 
 def extract_data_fields(file_bytes, filename):
     # Reads from bytes, not file object!
@@ -412,11 +386,11 @@ def extract_data_fields(file_bytes, filename):
     if "Box 31 Description Value" in specific_box_texts:
         specific_text_prompt += f"Text found in the approximate region of Box 31 Description value: \"{specific_box_texts['Box 31 Description Value']}\"\n"
     if "Box 31 Full Text" in specific_box_texts:
-        specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
+         specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
     if "D.Val Value" in specific_box_texts:
-        specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
+         specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
     if "D.Qty Value" in specific_box_texts:
-        specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
+         specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
 
     # Map for field extraction
     common_fields_map = {
@@ -504,13 +478,11 @@ Document text:
                                 potential_prefixes.extend([f"{display_key}:", f"{display_key} :", f"{display_key} "])
                                 display_key_parts = re.split(r'[:\s]+', display_key)
                                 for part_dp in display_key_parts:
-                                    if part_dp: potential_prefixes.extend(
-                                        [f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
+                                    if part_dp: potential_prefixes.extend([f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
                             potential_prefixes = sorted(list(set(potential_prefixes)), key=len, reverse=True)
                             for prefix in potential_prefixes:
                                 if re.match(re.escape(prefix), cleaned_value, re.IGNORECASE):
-                                    cleaned_value = cleaned_value[len(prefix):].strip();
-                                    break
+                                    cleaned_value = cleaned_value[len(prefix):].strip(); break
                             common_data[display_key] = cleaned_value
                             logger.debug(f"Parsed field: {display_key} = {cleaned_value[:100]}")
 
@@ -533,7 +505,7 @@ Document text:
             if len(parts) > 1:
                 dsn_identifier = parts[1]
             else:
-                if full_dsn.startswith("#") or not full_dsn.replace(" ", "").isalnum():
+                if full_dsn.startswith("#") or not full_dsn.replace(" ","").isalnum():
                     dsn_identifier = full_dsn
                     dsn_year = ""
                 else:
@@ -578,7 +550,6 @@ Document text:
 
     return common_data
 
-
 def main():
     st.markdown("""
         <style>
@@ -607,6 +578,7 @@ def main():
                 new_files_uploaded = True
         if new_files_uploaded:
             st.session_state.all_extracted_data = []
+
 
     excel_column_order = [
         "Source File",
@@ -695,8 +667,7 @@ def main():
             col_title, col_button = st.columns([2, 1])
             with col_title:
                 st.markdown(f'<h2 class="sub-title">Extracted Data for: {filename}</h2>', unsafe_allow_html=True)
-                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>',
-                            unsafe_allow_html=True)
+                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>', unsafe_allow_html=True)
             with col_button:
                 if st.button(f"🔄 Recapture Data", key=f"recapture_{item_idx}_{filename}"):
                     with st.spinner(f"Recapturing data for {filename}..."):
@@ -711,7 +682,7 @@ def main():
                             "processed_by_user": current_user_login
                         }
                     st.success(f"Recapture complete for {filename}!")
-                    st.rerun()  # Refresh the page to show the updated data
+                    st.rerun() # Refresh the page to show the updated data
 
             if "error" in data_for_file:
                 st.error(data_for_file["error"])
@@ -728,14 +699,11 @@ def main():
                 sanitized_field_name = re.sub(r'[^A-Za-z0-9_]', '', field)
                 unique_key = f"file{item_idx}_field{field_idx}_{sanitized_field_name}"
                 if field_idx % 3 == 0:
-                    with col1:
-                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col1: st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 elif field_idx % 3 == 1:
-                    with col2:
-                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col2: st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 else:
-                    with col3:
-                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col3: st.text_input(field, value=field_value, key=unique_key, disabled=True)
             st.markdown("---")
 
         if st.session_state.all_extracted_data:
@@ -752,18 +720,13 @@ def main():
                     "Processing DateTime (UTC)": proc_datetime,
                     "Processed By User": proc_user
                 }
-                is_error_state = isinstance(data_for_file, str) or (
-                            isinstance(data_for_file, dict) and "error" in data_for_file)
+                is_error_state = isinstance(data_for_file, str) or (isinstance(data_for_file, dict) and "error" in data_for_file)
                 if is_error_state:
-                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error",
-                                                                                                           "Unknown extraction error")
+                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error", "Unknown extraction error")
                     row_data["Declarant Sequence Year"] = f"ERROR: {error_message}"
                     for field_name in excel_column_order:
                         if field_name not in row_data:
-                            row_data[field_name] = "N/A due to error" if field_name not in ["Source File",
-                                                                                            "Processing DateTime (UTC)",
-                                                                                            "Processed By User"] else row_data.get(
-                                field_name)
+                             row_data[field_name] = "N/A due to error" if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"] else row_data.get(field_name)
                 else:
                     for field_name in excel_column_order:
                         if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"]:
@@ -790,7 +753,6 @@ def main():
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         help='Download all extracted data in a single sheet tabular format.'
                     )
-
 
 if __name__ == "__main__":
     try:
