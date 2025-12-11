@@ -22,6 +22,7 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 
+
 def _mirror_to_browser_console(level: str, message: str):
     """Send a console.<level> message to the browser via injected script."""
     try:
@@ -30,20 +31,24 @@ def _mirror_to_browser_console(level: str, message: str):
     except Exception:
         logger.debug("Failed to mirror message to browser console")
 
+
 def log_error(message: str):
     """Log error to terminal and browser console."""
     logger.error(message)
     _mirror_to_browser_console('error', message)
+
 
 def log_info(message: str):
     """Log info to terminal and browser console."""
     logger.info(message)
     _mirror_to_browser_console('info', message)
 
+
 def log_warning(message: str):
     """Log warning to terminal and browser console."""
     logger.warning(message)
     _mirror_to_browser_console('warn', message)
+
 
 COMPANY_NAME = "Jolanka Group"
 COMPANY_SLOGAN = "Innovative Customs Data Solutions"
@@ -172,7 +177,7 @@ st.markdown(f"""
         transform: translateY(-2px) scale(1.04);
         box-shadow: 0 6px 20px 0 #22c1c344;
     }}
-    
+
     </style>
 """, unsafe_allow_html=True)
 
@@ -226,14 +231,23 @@ components.html("""
 </script>
 """, height=0)
 
-# Load environment variables from .env file
+# Load environment variables from .env file (for local dev)
 load_dotenv()
 
-# Gemini API Configuration
-gemini_api_key = os.getenv("GOOGLE_API_KEY")
+# --- FIXED: Gemini API Key Handling for Streamlit Cloud ---
+# 1. Try Streamlit Secrets (Production)
+# 2. Try OS Environment Variables (Local)
+gemini_api_key = None
+
+if "GOOGLE_API_KEY" in st.secrets:
+    gemini_api_key = st.secrets["GOOGLE_API_KEY"]
+elif os.getenv("GOOGLE_API_KEY"):
+    gemini_api_key = os.getenv("GOOGLE_API_KEY")
+
 if not gemini_api_key:
-    err_msg = "Gemini API key not found. Please set GOOGLE_API_KEY in your .env file."
+    err_msg = "Gemini API key not found! Please set 'GOOGLE_API_KEY' in your Streamlit Cloud Secrets or .env file."
     st.error(err_msg)
+    st.info("To fix this in Streamlit Cloud: Go to App Settings > Secrets and add: GOOGLE_API_KEY = 'your_key'")
     log_error(err_msg)
     st.stop()
 else:
@@ -244,7 +258,11 @@ else:
     except Exception:
         pass
 
-gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# --- FIXED: Use Standard Gemini 1.5 Flash Model ---
+# 2.0-flash is a preview model and might cause 404/400 errors if not enabled in your project.
+# 1.5-flash is stable and highly capable for this task.
+gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
 
 def generate_content(prompt):
     headers = {
@@ -255,27 +273,28 @@ def generate_content(prompt):
     try:
         logger.debug("Calling Gemini API: %s", gemini_endpoint)
         log_info("Calling Gemini API...")
-        
+
         response = requests.post(gemini_endpoint, headers=headers, json=data, timeout=30)
-        
+
         logger.debug("Gemini response status: %s", response.status_code)
-        
+
         if response.status_code != 200:
             body_preview = response.text[:2000]
             err_msg = f"Gemini API returned {response.status_code}: {body_preview}"
-            st.error(err_msg)
+            st.error(f"AI Extraction Failed (Status {response.status_code}). Please check your API Key and Quota.")
             log_error(err_msg)
             return None
-            
+
         response.raise_for_status()
         log_info("Gemini API call successful")
         return response.json()
     except requests.exceptions.RequestException as e:
         tb = traceback.format_exc()
         err_msg = f"Error calling Gemini API: {e}\n{tb}"
-        st.error(err_msg)
+        st.error(f"Network error calling AI service: {e}")
         log_error(err_msg)
         return None
+
 
 def extract_page_from_pdf(pdf_file_object):
     try:
@@ -293,6 +312,7 @@ def extract_page_from_pdf(pdf_file_object):
         st.error(err_msg)
         log_error(err_msg)
         return None
+
 
 def parse_customs_reference(raw_customs_ref):
     if not raw_customs_ref:
@@ -312,6 +332,7 @@ def parse_customs_reference(raw_customs_ref):
         else:
             ref_numbers.append(line)
     return ref_type, ref_numbers
+
 
 def extract_customs_reference_date(document_text, raw_customs_ref):
     # Try to extract a date in the format DD/MM/YYYY immediately after Customs Reference Number block
@@ -334,6 +355,7 @@ def extract_customs_reference_date(document_text, raw_customs_ref):
         if match:
             return match.group(1)
     return ""
+
 
 def extract_data_fields(file_bytes, filename):
     # Reads from bytes, not file object!
@@ -386,11 +408,11 @@ def extract_data_fields(file_bytes, filename):
     if "Box 31 Description Value" in specific_box_texts:
         specific_text_prompt += f"Text found in the approximate region of Box 31 Description value: \"{specific_box_texts['Box 31 Description Value']}\"\n"
     if "Box 31 Full Text" in specific_box_texts:
-         specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
+        specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
     if "D.Val Value" in specific_box_texts:
-         specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
+        specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
     if "D.Qty Value" in specific_box_texts:
-         specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
+        specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
 
     # Map for field extraction
     common_fields_map = {
@@ -440,11 +462,11 @@ Document text:
     response = generate_content(prompt)
     common_data = {}
     extracted_text_response = ""
-    
+
     # Log the raw Gemini response for debugging
     if response:
         logger.debug(f"Gemini response for {filename}: {str(response)[:500]}")
-    
+
     if response and "candidates" in response and len(response['candidates']) > 0:
         content_part = response['candidates'][0]['content']['parts'][0]
         if 'text' in content_part:
@@ -452,7 +474,7 @@ Document text:
             # Log what Gemini returned
             log_info(f"Gemini extracted text preview (first 500 chars): {extracted_text_response[:500]}")
             logger.debug(f"Full Gemini response text for {filename}:\n{extracted_text_response}")
-            
+
             for line in extracted_text_response.strip().split('\n'):
                 line = line.strip()
                 # Remove leading bullet points or list markers (-, *, •, etc.)
@@ -478,11 +500,13 @@ Document text:
                                 potential_prefixes.extend([f"{display_key}:", f"{display_key} :", f"{display_key} "])
                                 display_key_parts = re.split(r'[:\s]+', display_key)
                                 for part_dp in display_key_parts:
-                                    if part_dp: potential_prefixes.extend([f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
+                                    if part_dp: potential_prefixes.extend(
+                                        [f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
                             potential_prefixes = sorted(list(set(potential_prefixes)), key=len, reverse=True)
                             for prefix in potential_prefixes:
                                 if re.match(re.escape(prefix), cleaned_value, re.IGNORECASE):
-                                    cleaned_value = cleaned_value[len(prefix):].strip(); break
+                                    cleaned_value = cleaned_value[len(prefix):].strip();
+                                    break
                             common_data[display_key] = cleaned_value
                             logger.debug(f"Parsed field: {display_key} = {cleaned_value[:100]}")
 
@@ -505,7 +529,7 @@ Document text:
             if len(parts) > 1:
                 dsn_identifier = parts[1]
             else:
-                if full_dsn.startswith("#") or not full_dsn.replace(" ","").isalnum():
+                if full_dsn.startswith("#") or not full_dsn.replace(" ", "").isalnum():
                     dsn_identifier = full_dsn
                     dsn_year = ""
                 else:
@@ -550,6 +574,7 @@ Document text:
 
     return common_data
 
+
 def main():
     st.markdown("""
         <style>
@@ -561,7 +586,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    current_user_login = "dilshan-jolanka" 
+    current_user_login = "dilshan-jolanka"
 
     # File upload and caching for stability
     if 'cached_uploaded_files' not in st.session_state:
@@ -579,12 +604,11 @@ def main():
         if new_files_uploaded:
             st.session_state.all_extracted_data = []
 
-
     excel_column_order = [
-        "Source File", 
-        "Processing DateTime (UTC)", 
+        "Source File",
+        "Processing DateTime (UTC)",
         "Processed By User",
-        "Customs Reference Code E", 
+        "Customs Reference Code E",
         "Customs Reference Type",
         "Customs Reference Number",
         "Customs Reference Date",
@@ -603,19 +627,19 @@ def main():
         "Total Amount Invoiced",
         "Box 23: Exchange Rate",
         "Box 28: Financial and banking data",
-        "Guarantee LKR", 
+        "Guarantee LKR",
         "Box 31: Description",
         "Marks & Nos of Packages",
         "Number & Kind",
         "Box 33: Commodity (HS) Code",
-        "Box 35: Gross Mass (Kg)", 
+        "Box 35: Gross Mass (Kg)",
         "Box 38: Net Mass (Kg)",
-        "D.Val", 
+        "D.Val",
         "D.Qty",
     ]
 
     common_fields_to_display_in_ui = [
-        "Customs Reference Code E", 
+        "Customs Reference Code E",
         "Customs Reference Type",
         "Customs Reference Number",
         "Customs Reference Date",
@@ -641,7 +665,7 @@ def main():
         st.write(f"{len(st.session_state['cached_uploaded_files'])} PDF(s) cached.")
         if st.button("Extract Data from All Uploaded PDFs"):
             processing_start_time_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.all_extracted_data = [] 
+            st.session_state.all_extracted_data = []
             with st.spinner("Extracting data from all PDFs..."):
                 for filename, file_bytes in st.session_state['cached_uploaded_files'].items():
                     st.write(f"Processing {filename}...")
@@ -667,13 +691,14 @@ def main():
             col_title, col_button = st.columns([2, 1])
             with col_title:
                 st.markdown(f'<h2 class="sub-title">Extracted Data for: {filename}</h2>', unsafe_allow_html=True)
-                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>',
+                            unsafe_allow_html=True)
             with col_button:
                 if st.button(f"🔄 Recapture Data", key=f"recapture_{item_idx}_{filename}"):
                     with st.spinner(f"Recapturing data for {filename}..."):
                         file_bytes = st.session_state['cached_uploaded_files'][filename]
                         recaptured_data = extract_data_fields(file_bytes, filename)
-                        
+
                         # Update the specific item in the session state list
                         st.session_state.all_extracted_data[item_idx] = {
                             "filename": filename,
@@ -682,8 +707,8 @@ def main():
                             "processed_by_user": current_user_login
                         }
                     st.success(f"Recapture complete for {filename}!")
-                    st.rerun() # Refresh the page to show the updated data
-            
+                    st.rerun()  # Refresh the page to show the updated data
+
             if "error" in data_for_file:
                 st.error(data_for_file["error"])
                 st.markdown("---")
@@ -699,11 +724,14 @@ def main():
                 sanitized_field_name = re.sub(r'[^A-Za-z0-9_]', '', field)
                 unique_key = f"file{item_idx}_field{field_idx}_{sanitized_field_name}"
                 if field_idx % 3 == 0:
-                    with col1: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col1:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 elif field_idx % 3 == 1:
-                    with col2: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col2:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 else:
-                    with col3: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col3:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
             st.markdown("---")
 
         if st.session_state.all_extracted_data:
@@ -720,19 +748,24 @@ def main():
                     "Processing DateTime (UTC)": proc_datetime,
                     "Processed By User": proc_user
                 }
-                is_error_state = isinstance(data_for_file, str) or (isinstance(data_for_file, dict) and "error" in data_for_file)
+                is_error_state = isinstance(data_for_file, str) or (
+                            isinstance(data_for_file, dict) and "error" in data_for_file)
                 if is_error_state:
-                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error", "Unknown extraction error")
+                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error",
+                                                                                                           "Unknown extraction error")
                     row_data["Declarant Sequence Year"] = f"ERROR: {error_message}"
                     for field_name in excel_column_order:
                         if field_name not in row_data:
-                             row_data[field_name] = "N/A due to error" if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"] else row_data.get(field_name)
+                            row_data[field_name] = "N/A due to error" if field_name not in ["Source File",
+                                                                                            "Processing DateTime (UTC)",
+                                                                                            "Processed By User"] else row_data.get(
+                                field_name)
                 else:
                     for field_name in excel_column_order:
                         if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"]:
                             row_data[field_name] = data_for_file.get(field_name, "")
                 all_files_rows_for_excel.append(row_data)
-            
+
             if all_files_rows_for_excel:
                 df_export = pd.DataFrame(all_files_rows_for_excel)
                 final_columns_for_excel = []
@@ -745,7 +778,7 @@ def main():
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, sheet_name='All Extracted Data', index=False)
                 excel_data = output.getvalue()
-                if excel_data: 
+                if excel_data:
                     st.download_button(
                         label="Export All Data to Excel",
                         data=excel_data,
@@ -753,6 +786,7 @@ def main():
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         help='Download all extracted data in a single sheet tabular format.'
                     )
+
 
 if __name__ == "__main__":
     try:

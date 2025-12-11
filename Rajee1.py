@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 import logging
 import traceback
 import json as _json
+import time
 
 # --- Setup logging to terminal and browser console ---
 logger = logging.getLogger("cusdec_app")
@@ -22,6 +23,7 @@ if not logger.handlers:
     logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
 
+
 def _mirror_to_browser_console(level: str, message: str):
     """Send a console.<level> message to the browser via injected script."""
     try:
@@ -30,20 +32,24 @@ def _mirror_to_browser_console(level: str, message: str):
     except Exception:
         logger.debug("Failed to mirror message to browser console")
 
+
 def log_error(message: str):
     """Log error to terminal and browser console."""
     logger.error(message)
     _mirror_to_browser_console('error', message)
+
 
 def log_info(message: str):
     """Log info to terminal and browser console."""
     logger.info(message)
     _mirror_to_browser_console('info', message)
 
+
 def log_warning(message: str):
     """Log warning to terminal and browser console."""
     logger.warning(message)
     _mirror_to_browser_console('warn', message)
+
 
 COMPANY_NAME = "Jolanka Group"
 COMPANY_SLOGAN = "Innovative Customs Data Solutions"
@@ -172,7 +178,7 @@ st.markdown(f"""
         transform: translateY(-2px) scale(1.04);
         box-shadow: 0 6px 20px 0 #22c1c344;
     }}
-    
+
     </style>
 """, unsafe_allow_html=True)
 
@@ -237,46 +243,108 @@ if not gemini_api_key:
     log_error(err_msg)
     st.stop()
 else:
-    # Log masked confirmation
+    # log masked confirmation
     try:
         masked = f"{gemini_api_key[:4]}...{gemini_api_key[-4:]}" if len(gemini_api_key) > 8 else "(loaded)"
         log_info(f"GOOGLE_API_KEY loaded: {masked}")
     except Exception:
         pass
 
-gemini_endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# Default model (optimized for free tier)
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+# Optional alternate model if you'd like the app automatically switch
+ALTERNATE_GEMINI_MODEL = os.getenv("ALTERNATE_GEMINI_MODEL", "").strip() or None
 
-def generate_content(prompt):
+
+def _build_endpoint_for_model(model_name: str) -> str:
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+
+
+# ---- Helper: smart trim document text to reduce tokens ----
+def _trim_document_for_prompt(document_text: str, max_chars: int = 12000) -> (str, bool):
+    """
+    Trim document to approx max_chars while keeping start + end context.
+    Returns (trimmed_text, trimmed_flag)
+    """
+    if not document_text:
+        return "", False
+    if len(document_text) <= max_chars:
+        return document_text, False
+    # keep first 8000 and last (max_chars-8000)
+    head = document_text[:8000]
+    tail = document_text[-(max_chars - 8000):]
+    notice = "\n\n[...DOCUMENT TRIMMED - some middle content removed to reduce token usage...]\n\n"
+    trimmed = head + notice + tail
+    return trimmed, True
+
+
+# ---- Core: call Gemini with retries and fallback trimming ----
+def generate_content(prompt, model_name: str = DEFAULT_GEMINI_MODEL, max_retries: int = 3, timeout: int = 30):
+    endpoint = _build_endpoint_for_model(model_name)
     headers = {
         "Content-Type": "application/json",
         "X-goog-api-key": gemini_api_key
     }
     data = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        logger.debug("Calling Gemini API: %s", gemini_endpoint)
-        log_info("Calling Gemini API...")
-        
-        response = requests.post(gemini_endpoint, headers=headers, json=data, timeout=30)
-        
-        logger.debug("Gemini response status: %s", response.status_code)
-        
-        if response.status_code != 200:
+    attempt = 0
+    backoff = 1.0
+    last_error = None
+
+    while attempt < max_retries:
+        try:
+            logger.debug("Calling Gemini API (model=%s) attempt=%d", model_name, attempt + 1)
+            log_info(f"Calling Gemini API (model={model_name}) attempt {attempt + 1}...")
+            response = requests.post(endpoint, headers=headers, json=data, timeout=timeout)
+            logger.debug("Gemini raw response status: %s", response.status_code)
+            if response.status_code == 200:
+                response.raise_for_status()
+                log_info("Gemini API call successful")
+                return response.json()
+            # handle rate limit / quota errors specially
+            if response.status_code == 429:
+                body = response.text
+                log_warning(f"Gemini 429 on attempt {attempt + 1}: {body[:1000]}")
+                last_error = body
+                # If we have an alternate model configured, try it once
+                if ALTERNATE_GEMINI_MODEL and model_name != ALTERNATE_GEMINI_MODEL:
+                    log_info(f"Attempting fallback to alternate model: {ALTERNATE_GEMINI_MODEL}")
+                    model_name = ALTERNATE_GEMINI_MODEL
+                    endpoint = _build_endpoint_for_model(model_name)
+                    attempt += 1
+                    continue
+                # otherwise, try trimming prompt and retry with backoff
+                log_info(
+                    "Quota or rate-limit detected. Will retry after backoff; attempting to trim prompt if possible.")
+                time.sleep(backoff)
+                backoff *= 2
+                attempt += 1
+                continue
+            # For other non-200 codes, show message and break
             body_preview = response.text[:2000]
             err_msg = f"Gemini API returned {response.status_code}: {body_preview}"
-            st.error(err_msg)
             log_error(err_msg)
-            return None
-            
-        response.raise_for_status()
-        log_info("Gemini API call successful")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        tb = traceback.format_exc()
-        err_msg = f"Error calling Gemini API: {e}\n{tb}"
-        st.error(err_msg)
-        log_error(err_msg)
-        return None
+            last_error = err_msg
+            return {"__error": err_msg}
+        except requests.exceptions.RequestException as e:
+            tb = traceback.format_exc()
+            err_msg = f"Error calling Gemini API: {e}\n{tb}"
+            log_error(err_msg)
+            last_error = err_msg
+            time.sleep(backoff)
+            backoff *= 2
+            attempt += 1
 
+    # If we reach here, retries exhausted
+    final_msg = ("Gemini API calls failed after retries. "
+                 "Possible causes: quota exceeded, billing not enabled, or network issues. "
+                 "Check your Google Cloud billing & quota or set ALTERNATE_GEMINI_MODEL env var.")
+    if last_error:
+        final_msg += f"\nLast error: {str(last_error)[:1000]}"
+    log_error(final_msg)
+    return {"__error": final_msg}
+
+
+# --- The rest of your original helper functions (unchanged logic) ---
 def extract_page_from_pdf(pdf_file_object):
     try:
         with pdfplumber.open(pdf_file_object) as pdf:
@@ -293,6 +361,7 @@ def extract_page_from_pdf(pdf_file_object):
         st.error(err_msg)
         log_error(err_msg)
         return None
+
 
 def parse_customs_reference(raw_customs_ref):
     if not raw_customs_ref:
@@ -313,27 +382,23 @@ def parse_customs_reference(raw_customs_ref):
             ref_numbers.append(line)
     return ref_type, ref_numbers
 
+
 def extract_customs_reference_date(document_text, raw_customs_ref):
-    # Try to extract a date in the format DD/MM/YYYY immediately after Customs Reference Number block
-    # Use the raw_customs_ref to find its position in the document text, then scan right after it
-    # Fallback to first occurrence of DD/MM/YYYY in the document if not found nearby
     date_pattern = r"(\b\d{2}/\d{2}/\d{4}\b)"
     if raw_customs_ref:
-        # Find all matches in the document, take the one nearest to customs ref block if possible
         matches = list(re.finditer(date_pattern, document_text))
         if matches:
-            # Try to use the first one after the customs ref block
             ref_pos = document_text.find(raw_customs_ref)
             for m in matches:
                 if m.start() > ref_pos:
                     return m.group(1)
-            # fallback to first date found
             return matches[0].group(1)
     else:
         match = re.search(date_pattern, document_text)
         if match:
             return match.group(1)
     return ""
+
 
 def extract_data_fields(file_bytes, filename):
     # Reads from bytes, not file object!
@@ -386,11 +451,11 @@ def extract_data_fields(file_bytes, filename):
     if "Box 31 Description Value" in specific_box_texts:
         specific_text_prompt += f"Text found in the approximate region of Box 31 Description value: \"{specific_box_texts['Box 31 Description Value']}\"\n"
     if "Box 31 Full Text" in specific_box_texts:
-         specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
+        specific_text_prompt += f"Full text found in the approximate region of Box 31: \"{specific_box_texts['Box 31 Full Text']}\"\n"
     if "D.Val Value" in specific_box_texts:
-         specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
+        specific_text_prompt += f"Text found in the approximate region of D.Val value: \"{specific_box_texts['D.Val Value']}\"\n"
     if "D.Qty Value" in specific_box_texts:
-         specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
+        specific_text_prompt += f"Text found in the approximate region of D.Qty value: \"{specific_box_texts['D.Qty Value']}\"\n"
 
     # Map for field extraction
     common_fields_map = {
@@ -413,7 +478,6 @@ def extract_data_fields(file_bytes, filename):
         "Box 31": "Box 31: Description",
         "Marks & Nos of Packages": "Marks & Nos of Packages",
         "Number & Kind": "Number & Kind",
-        # "Description": "Description",
         "Box 33": "Box 33: Commodity (HS) Code",
         "Box 35": "Box 35: Gross Mass (Kg)",
         "Box 38": "Box 38: Net Mass (Kg)",
@@ -422,6 +486,12 @@ def extract_data_fields(file_bytes, filename):
     }
     fields_to_extract_prompt_list = list(common_fields_map.values())
     fields_to_extract_prompt = "\n".join([f"- {name}" for name in fields_to_extract_prompt_list])
+
+    # Trim the document text smartly to reduce token usage (and retry if needed)
+    trimmed_doc_text, was_trimmed = _trim_document_for_prompt(document_text, max_chars=12000)
+    if was_trimmed:
+        log_info(
+            f"Document {filename} trimmed for token savings (original length {len(document_text)} chars -> {len(trimmed_doc_text)} chars)")
 
     prompt = f"""Analyze the following text from the first page of a SRI LANKA CUSTOMS-GOODS DECLARATION (CUSDEC II) document.
 {specific_text_prompt}
@@ -435,24 +505,40 @@ Common Fields to Extract:
 {fields_to_extract_prompt.strip()}
 If a field is not found, indicate 'Not Found'.
 Document text:
-{document_text}"""
+{trimmed_doc_text}"""
 
-    response = generate_content(prompt)
+    # Primary attempt using DEFAULT_GEMINI_MODEL and fallback behavior is inside generate_content
+    response = generate_content(prompt, model_name=DEFAULT_GEMINI_MODEL, max_retries=4, timeout=30)
     common_data = {}
     extracted_text_response = ""
-    
+
+    if not response:
+        err_msg = "No response from the Gemini API."
+        log_error(err_msg)
+        return {"error": err_msg}
+
+    if isinstance(response, dict) and response.get("__error"):
+        return {"error": response.get("__error")}
+
     # Log the raw Gemini response for debugging
-    if response:
-        logger.debug(f"Gemini response for {filename}: {str(response)[:500]}")
-    
+    try:
+        logger.debug(f"Gemini raw response for {filename}: {str(response)[:500]}")
+    except Exception:
+        pass
+
     if response and "candidates" in response and len(response['candidates']) > 0:
         content_part = response['candidates'][0]['content']['parts'][0]
+        # handle both 'text' or 'html' etc.
         if 'text' in content_part:
             extracted_text_response = content_part['text']
-            # Log what Gemini returned
-            log_info(f"Gemini extracted text preview (first 500 chars): {extracted_text_response[:500]}")
+        else:
+            # attempt to stringify whatever is present
+            extracted_text_response = json.dumps(content_part) if content_part else ""
+
+        if extracted_text_response:
+            log_info(f"Gemini extracted text preview (first 400 chars): {extracted_text_response[:400]}")
             logger.debug(f"Full Gemini response text for {filename}:\n{extracted_text_response}")
-            
+
             for line in extracted_text_response.strip().split('\n'):
                 line = line.strip()
                 # Remove leading bullet points or list markers (-, *, •, etc.)
@@ -478,13 +564,21 @@ Document text:
                                 potential_prefixes.extend([f"{display_key}:", f"{display_key} :", f"{display_key} "])
                                 display_key_parts = re.split(r'[:\s]+', display_key)
                                 for part_dp in display_key_parts:
-                                    if part_dp: potential_prefixes.extend([f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
+                                    if part_dp: potential_prefixes.extend(
+                                        [f"{part_dp}:", f"{part_dp} :", f"{part_dp} "])
                             potential_prefixes = sorted(list(set(potential_prefixes)), key=len, reverse=True)
                             for prefix in potential_prefixes:
                                 if re.match(re.escape(prefix), cleaned_value, re.IGNORECASE):
-                                    cleaned_value = cleaned_value[len(prefix):].strip(); break
+                                    cleaned_value = cleaned_value[len(prefix):].strip();
+                                    break
                             common_data[display_key] = cleaned_value
                             logger.debug(f"Parsed field: {display_key} = {cleaned_value[:100]}")
+    else:
+        # Fallback: if structure unexpected, try to include whole response for debugging
+        try:
+            log_warning(f"Unexpected Gemini response structure for {filename}: keys: {list(response.keys())}")
+        except Exception:
+            pass
 
     # Log how many fields were extracted
     log_info(f"Extracted {len(common_data)} fields from {filename}")
@@ -505,7 +599,7 @@ Document text:
             if len(parts) > 1:
                 dsn_identifier = parts[1]
             else:
-                if full_dsn.startswith("#") or not full_dsn.replace(" ","").isalnum():
+                if full_dsn.startswith("#") or not full_dsn.replace(" ", "").isalnum():
                     dsn_identifier = full_dsn
                     dsn_year = ""
                 else:
@@ -535,20 +629,18 @@ Document text:
     box22_val = common_data.pop("Box 22: Currency & Total Amount Invoiced", "")
     currency, total_amount = "", ""
     if box22_val:
-        # Remove "& Total Amount Invoiced:" prefix
         box22_val = re.sub(r"& Total Amount Invoiced:\s*", "", box22_val)
-        # Try to extract currency and amount
         match = re.match(r"([A-Z]{3})\s*([\d,]+\.\d{2})", box22_val)
         if match:
             currency = match.group(1)
             total_amount = match.group(2)
         else:
-            # fallback: if only amount
             total_amount = box22_val
     common_data["Currency"] = currency
     common_data["Total Amount Invoiced"] = total_amount
 
     return common_data
+
 
 def main():
     st.markdown("""
@@ -561,7 +653,7 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    current_user_login = "dilshan-jolanka" 
+    current_user_login = "dilshan-jolanka"
 
     # File upload and caching for stability
     if 'cached_uploaded_files' not in st.session_state:
@@ -579,12 +671,11 @@ def main():
         if new_files_uploaded:
             st.session_state.all_extracted_data = []
 
-
     excel_column_order = [
-        "Source File", 
-        "Processing DateTime (UTC)", 
+        "Source File",
+        "Processing DateTime (UTC)",
         "Processed By User",
-        "Customs Reference Code E", 
+        "Customs Reference Code E",
         "Customs Reference Type",
         "Customs Reference Number",
         "Customs Reference Date",
@@ -603,19 +694,19 @@ def main():
         "Total Amount Invoiced",
         "Box 23: Exchange Rate",
         "Box 28: Financial and banking data",
-        "Guarantee LKR", 
+        "Guarantee LKR",
         "Box 31: Description",
         "Marks & Nos of Packages",
         "Number & Kind",
         "Box 33: Commodity (HS) Code",
-        "Box 35: Gross Mass (Kg)", 
+        "Box 35: Gross Mass (Kg)",
         "Box 38: Net Mass (Kg)",
-        "D.Val", 
+        "D.Val",
         "D.Qty",
     ]
 
     common_fields_to_display_in_ui = [
-        "Customs Reference Code E", 
+        "Customs Reference Code E",
         "Customs Reference Type",
         "Customs Reference Number",
         "Customs Reference Date",
@@ -641,7 +732,7 @@ def main():
         st.write(f"{len(st.session_state['cached_uploaded_files'])} PDF(s) cached.")
         if st.button("Extract Data from All Uploaded PDFs"):
             processing_start_time_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.all_extracted_data = [] 
+            st.session_state.all_extracted_data = []
             with st.spinner("Extracting data from all PDFs..."):
                 for filename, file_bytes in st.session_state['cached_uploaded_files'].items():
                     st.write(f"Processing {filename}...")
@@ -667,13 +758,14 @@ def main():
             col_title, col_button = st.columns([2, 1])
             with col_title:
                 st.markdown(f'<h2 class="sub-title">Extracted Data for: {filename}</h2>', unsafe_allow_html=True)
-                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p class="info-text">Processed on: {proc_datetime} (UTC) by {proc_user}</p>',
+                            unsafe_allow_html=True)
             with col_button:
                 if st.button(f"🔄 Recapture Data", key=f"recapture_{item_idx}_{filename}"):
                     with st.spinner(f"Recapturing data for {filename}..."):
                         file_bytes = st.session_state['cached_uploaded_files'][filename]
                         recaptured_data = extract_data_fields(file_bytes, filename)
-                        
+
                         # Update the specific item in the session state list
                         st.session_state.all_extracted_data[item_idx] = {
                             "filename": filename,
@@ -682,8 +774,8 @@ def main():
                             "processed_by_user": current_user_login
                         }
                     st.success(f"Recapture complete for {filename}!")
-                    st.rerun() # Refresh the page to show the updated data
-            
+                    st.rerun()  # Refresh the page to show the updated data
+
             if "error" in data_for_file:
                 st.error(data_for_file["error"])
                 st.markdown("---")
@@ -699,11 +791,14 @@ def main():
                 sanitized_field_name = re.sub(r'[^A-Za-z0-9_]', '', field)
                 unique_key = f"file{item_idx}_field{field_idx}_{sanitized_field_name}"
                 if field_idx % 3 == 0:
-                    with col1: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col1:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 elif field_idx % 3 == 1:
-                    with col2: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col2:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
                 else:
-                    with col3: st.text_input(field, value=field_value, key=unique_key, disabled=True)
+                    with col3:
+                        st.text_input(field, value=field_value, key=unique_key, disabled=True)
             st.markdown("---")
 
         if st.session_state.all_extracted_data:
@@ -720,19 +815,24 @@ def main():
                     "Processing DateTime (UTC)": proc_datetime,
                     "Processed By User": proc_user
                 }
-                is_error_state = isinstance(data_for_file, str) or (isinstance(data_for_file, dict) and "error" in data_for_file)
+                is_error_state = isinstance(data_for_file, str) or (
+                            isinstance(data_for_file, dict) and "error" in data_for_file)
                 if is_error_state:
-                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error", "Unknown extraction error")
+                    error_message = data_for_file if isinstance(data_for_file, str) else data_for_file.get("error",
+                                                                                                           "Unknown extraction error")
                     row_data["Declarant Sequence Year"] = f"ERROR: {error_message}"
                     for field_name in excel_column_order:
                         if field_name not in row_data:
-                             row_data[field_name] = "N/A due to error" if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"] else row_data.get(field_name)
+                            row_data[field_name] = "N/A due to error" if field_name not in ["Source File",
+                                                                                            "Processing DateTime (UTC)",
+                                                                                            "Processed By User"] else row_data.get(
+                                field_name)
                 else:
                     for field_name in excel_column_order:
                         if field_name not in ["Source File", "Processing DateTime (UTC)", "Processed By User"]:
                             row_data[field_name] = data_for_file.get(field_name, "")
                 all_files_rows_for_excel.append(row_data)
-            
+
             if all_files_rows_for_excel:
                 df_export = pd.DataFrame(all_files_rows_for_excel)
                 final_columns_for_excel = []
@@ -745,7 +845,7 @@ def main():
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_export.to_excel(writer, sheet_name='All Extracted Data', index=False)
                 excel_data = output.getvalue()
-                if excel_data: 
+                if excel_data:
                     st.download_button(
                         label="Export All Data to Excel",
                         data=excel_data,
@@ -753,6 +853,7 @@ def main():
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         help='Download all extracted data in a single sheet tabular format.'
                     )
+
 
 if __name__ == "__main__":
     try:
